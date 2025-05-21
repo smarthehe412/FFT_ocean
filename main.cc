@@ -496,14 +496,14 @@ void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat
 int main(int argc, char *argv[]) {
 
 	// constants
-	const int WIDTH  = 1920, HEIGHT = 1080;
-	// const int WIDTH  = 1024, HEIGHT = 768;
+	// const int WIDTH  = 640, HEIGHT = 360;
+	const int WIDTH  = 1600, HEIGHT = 900;
 	
 	// buffer for grabs
 	cBuffer buffer(WIDTH, HEIGHT);
 
 	// controls
-	cKeyboard kb; int key_up, key_down, key_left, key_right, keyx, keyz;
+	cKeyboard kb; int key_up, key_down, key_front, key_back, key_left, key_right, keyx, keyy, keyz;
 	cJoystick js; joystick_position jp[2];
 	cMouse    ms; mouse_state mst;
 
@@ -518,7 +518,8 @@ int main(int argc, char *argv[]) {
 	SDL_Event event;
 
 	// ocean simulator
-	cOcean ocean(256, 0.0005f, vector2(32.0f,32.0f), 64, false);
+	cOcean ocean(128, 0.0005f, vector2(32.0f,32.0f), 64, false);
+    // ocean.setTransparency(1.0f);
 
 	// model view projection matrices and light position
 	glm::mat4 Projection = glm::perspective(45.0f, (float)WIDTH / (float)HEIGHT, 0.1f, 1000.0f); 
@@ -531,6 +532,9 @@ int main(int argc, char *argv[]) {
 	      pitch =   0.0f, yaw  =   0.0f, roll  =   0.0f,
 	      x     =   0.0f, y    =   0.0f, z     = -20.0f;
 
+    key_up = key_down = key_front = key_back = key_left = key_right = 0;
+    int step_length = 100;
+    int use_fft = 1;
 	while(active) {
 		while (SDL_PollEvent(&event)) {
 			switch (event.type) {
@@ -545,8 +549,29 @@ int main(int argc, char *argv[]) {
 					fullscreen ^= true;
 					screen = SDL_SetVideoMode(WIDTH, HEIGHT, 32, (fullscreen ? SDL_FULLSCREEN : 0) | SDL_HWSURFACE | SDL_OPENGL);
 					break;
+                case SDLK_e: use_fft ^= 1; break;
+                case SDLK_SPACE: key_up = 1; break;
+                case SDLK_LSHIFT: key_down = 1; break;
+                case SDLK_w: key_front = 1; break;
+                case SDLK_s: key_back = 1; break;
+                case SDLK_a: key_left = 1; break;
+                case SDLK_d: key_right = 1; break;
 				}
 				break;
+            case SDL_KEYUP:
+                switch (event.key.keysym.sym) {
+                case SDLK_SPACE: key_up = 0; break;
+                case SDLK_LSHIFT: key_down = 0; break;
+                case SDLK_w: key_front = 0; break;
+                case SDLK_s: key_back = 0; break;
+                case SDLK_a: key_left = 0; break;
+                case SDLK_d: key_right = 0; break;
+                }
+				break;
+            case SDL_MOUSEMOTION:
+                mst.axis[0] = event.motion.x;
+                mst.axis[1] = event.motion.y;
+                break;
 			}
 		}
 
@@ -565,18 +590,20 @@ int main(int argc, char *argv[]) {
 		x     += -cos(-yaw*M_PI/180.0f)*jp[0].x*elapsed0*30 + sin(-yaw*M_PI/180.0f)*jp[0].y*elapsed0*30;
 		z     +=  cos(-yaw*M_PI/180.0f)*jp[0].y*elapsed0*30 + sin(-yaw*M_PI/180.0f)*jp[0].x*elapsed0*30;
 		*/
-		mst = ms.getMouseState();
-		yaw   +=  mst.axis[0]*elapsed0*20;
-		pitch += -mst.axis[1]*elapsed0*20;
+		// mst = ms.getMouseState();
+		yaw   =  (mst.axis[0] - WIDTH / 2) * 0.2;
+		pitch = -(mst.axis[1] - HEIGHT / 2) * 0.2;
 
-		key_up    = kb.getKeyState(KEY_W);
-		key_down  = kb.getKeyState(KEY_S);
-		key_left  = kb.getKeyState(KEY_A);
-		key_right = kb.getKeyState(KEY_D);
+		// key_up    = kb.getKeyState(KEY_W);
+		// key_down  = kb.getKeyState(KEY_S);
+		// key_left  = kb.getKeyState(KEY_A);
+		// key_right = kb.getKeyState(KEY_D);
 		keyx = -key_left +  key_right;
-		keyz =  key_up   + -key_down;
-		x     += -cos(-yaw*M_PI/180.0f)*keyx*elapsed0*30 + sin(-yaw*M_PI/180.0f)*keyz*elapsed0*30;
-		z     +=  cos(-yaw*M_PI/180.0f)*keyz*elapsed0*30 + sin(-yaw*M_PI/180.0f)*keyx*elapsed0*30;
+		keyz =  key_front   + -key_back;
+        keyy = -key_up + key_down;
+		x     += -cos(-yaw*M_PI/180.0f)*keyx*elapsed0*step_length + sin(-yaw*M_PI/180.0f)*keyz*elapsed0*step_length;
+		z     +=  cos(-yaw*M_PI/180.0f)*keyz*elapsed0*step_length + sin(-yaw*M_PI/180.0f)*keyx*elapsed0*step_length;
+        y     +=  keyy*elapsed0*step_length;
 
 		// rendering
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
@@ -585,16 +612,16 @@ int main(int argc, char *argv[]) {
 		View  = glm::mat4(1.0f);
 		View  = glm::rotate(View, pitch, glm::vec3(-1.0f, 0.0f, 0.0f));
 		View  = glm::rotate(View, yaw,   glm::vec3(0.0f, 1.0f, 0.0f));
-		View  = glm::translate(View, glm::vec3(x, -50, z));
+		View  = glm::translate(View, glm::vec3(x, -50 + y, z));
 		light_position = glm::vec3(1000.0f, 100.0f, -1000.0f);
 
 		if (video_grab) {
 			elapsed_video += 1.0f/30.0f;
-			ocean.render(elapsed_video, light_position, Projection, View, Model, true);
+			ocean.render(elapsed_video, light_position, Projection, View, Model, use_fft);
 			SDL_GL_SwapBuffers();
 			buffer.save(true);
 		} else {
-			ocean.render(t1.elapsed(false), light_position, Projection, View, Model, true);
+			ocean.render(t1.elapsed(false), light_position, Projection, View, Model, use_fft);
 			SDL_GL_SwapBuffers();
 		}
 
