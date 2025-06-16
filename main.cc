@@ -30,6 +30,7 @@ struct vertex_ocean {
 	GLfloat   a,   b,   c; // htilde0
 	GLfloat  _a,  _b,  _c; // htilde0mk conjugate
 	GLfloat  ox,  oy,  oz; // original position
+	GLfloat alpha_weight;
 };
 
 
@@ -49,6 +50,7 @@ class cOcean {
 	bool geometry;				// flag to render geometry or surface
 
 	float g;				// gravity constant
+	float transparency;
 	int N, Nplus1;				// dimension -- N should be a power of 2
 	float A;				// phillips spectrum parameter -- affects heights of waves
 	vector2 w;				// wind parameter
@@ -66,13 +68,23 @@ class cOcean {
 
 	GLuint glProgram, glShaderV, glShaderF;	// shaders
 	GLint vertex, normal, texture, light_position, projection, view, model;	// attributes and uniforms
+	GLint alpha, u_transparency; // Alpha
 
+    GLuint seabedVAO, seabedVBO;
+
+    GLuint foamTexture;
+    GLuint normalMapTexture;
+    GLint u_foamTexture;
+    GLint u_normalMap;
+    GLint u_time;
   protected:
   public:
 	cOcean(const int N, const float A, const vector2 w, const float length, bool geometry);
 	~cOcean();
 	void release();
-
+	
+	void setTransparency(float t);
+    void initSeabed();
 	float dispersion(int n_prime, int m_prime);		// deep water
 	float phillips(int n_prime, int m_prime);		// phillips spectrum
 	complex hTilde_0(int n_prime, int m_prime);
@@ -81,10 +93,102 @@ class cOcean {
 	void evaluateWaves(float t);
 	void evaluateWavesFFT(float t);
 	void render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat4 View, glm::mat4 Model, bool use_fft);
+
+	 GLuint generateTexture();
+    
+    void initTextures() {
+        // 生成泡沫纹理
+        glGenTextures(1, &foamTexture);
+        generateTexture(); // 首次调用生成泡沫纹理
+        
+        // 生成法线贴图
+        glGenTextures(1, &normalMapTexture);
+        generateTexture(); // 再次调用生成法线贴图
+        
+        // 获取uniform位置
+        u_foamTexture = glGetUniformLocation(glProgram, "u_foamTexture");
+        u_normalMap = glGetUniformLocation(glProgram, "u_normalMap");
+        u_time = glGetUniformLocation(glProgram, "u_time");
+    }
+    
+
 };
 
+GLuint cOcean::generateTexture() {
+    GLuint textureID;
+    glGenTextures(1, &textureID);
+    glBindTexture(GL_TEXTURE_2D, textureID);
+    
+    // 设置纹理参数
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_REPEAT);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR_MIPMAP_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    
+    // 创建简单的程序化纹理
+    unsigned char data[64*64*4]; // 64x64 RGBA纹理
+    
+    for (int y = 0; y < 64; y++) {
+        for (int x = 0; x < 64; x++) {
+            int idx = (y * 64 + x) * 4;
+            
+            // 泡沫纹理 - 白色噪点
+            if (textureID == foamTexture) {
+                float noise = static_cast<float>(rand()) / RAND_MAX;
+                data[idx] = 255;     // R
+                data[idx+1] = 255;   // G
+                data[idx+2] = 255;   // B
+                data[idx+3] = static_cast<unsigned char>(noise * 200); // A (透明度)
+            }
+            // 法线贴图 - 蓝色噪点
+            else {
+                float nx = static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f;
+                float ny = static_cast<float>(rand()) / RAND_MAX * 2.0f - 1.0f;
+                float nz = 1.0f; // 主要向上
+                
+                // 归一化
+                float len = sqrt(nx*nx + ny*ny + nz*nz);
+                nx /= len; ny /= len; nz /= len;
+                
+                data[idx] = static_cast<unsigned char>((nx + 1.0f) * 127.5f);   // R
+                data[idx+1] = static_cast<unsigned char>((ny + 1.0f) * 127.5f); // G
+                data[idx+2] = static_cast<unsigned char>((nz + 1.0f) * 127.5f); // B
+                data[idx+3] = 255; // A
+            }
+        }
+    }
+    
+    // 上传纹理数据
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, 64, 64, 0, GL_RGBA, GL_UNSIGNED_BYTE, data);
+    glGenerateMipmap(GL_TEXTURE_2D);
+    
+    return textureID;
+}
+
+void cOcean::initSeabed() {
+    glm::vec3 seabedColor = glm::vec3(0.2f, 0.5f, 0.3f);
+    float seabedDepth = -10.0f;
+
+    float seabedSize = length * 2.0f;
+    float vertices[] = {
+        -seabedSize, seabedDepth, -seabedSize,
+            seabedSize, seabedDepth, -seabedSize,
+            seabedSize, seabedDepth,  seabedSize,
+        -seabedSize, seabedDepth,  seabedSize
+    };
+
+    glGenVertexArrays(1, &seabedVAO);
+    glGenBuffers(1, &seabedVBO);
+    glBindVertexArray(seabedVAO);
+    glBindBuffer(GL_ARRAY_BUFFER, seabedVBO);
+    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+    glVertexAttribPointer(0, 3, GL_FLOAT, GL_FALSE, 3 * sizeof(float), (void*)0);
+    glEnableVertexAttribArray(0);
+    glBindVertexArray(0);
+}
+
 cOcean::cOcean(const int N, const float A, const vector2 w, const float length, const bool geometry) :
-	g(9.81), geometry(geometry), N(N), Nplus1(N+1), A(A), w(w), length(length),
+	g(9.81), geometry(geometry), N(N), Nplus1(N+1), A(A), w(w), length(length), transparency(0.5f),
 	vertices(0), indices(0), h_tilde(0), h_tilde_slopex(0), h_tilde_slopez(0), h_tilde_dx(0), h_tilde_dz(0), fft(0), cufft(0)
 {
 	h_tilde        = new complex[N*N];
@@ -156,6 +260,7 @@ cOcean::cOcean(const int N, const float A, const vector2 w, const float length, 
 	}
 
 	createProgram(glProgram, glShaderV, glShaderF, "src/oceanv.sh", "src/oceanf.sh");
+
 	vertex         = glGetAttribLocation(glProgram, "vertex");
 	normal         = glGetAttribLocation(glProgram, "normal");
 	texture        = glGetAttribLocation(glProgram, "texture");
@@ -163,6 +268,9 @@ cOcean::cOcean(const int N, const float A, const vector2 w, const float length, 
 	projection     = glGetUniformLocation(glProgram, "Projection");
 	view           = glGetUniformLocation(glProgram, "View");
 	model          = glGetUniformLocation(glProgram, "Model");
+
+    alpha          = glGetAttribLocation(glProgram, "aAlphaWeight");
+    u_transparency = glGetUniformLocation(glProgram, "uTransparency");
 
 	glGenBuffers(1, &vbo_vertices);
 	glBindBuffer(GL_ARRAY_BUFFER, vbo_vertices);
@@ -186,9 +294,15 @@ cOcean::~cOcean() {
 }
 
 void cOcean::release() {
+	glDeleteVertexArrays(1, &seabedVAO);
+    glDeleteBuffers(1, &seabedVBO);
 	glDeleteBuffers(1, &vbo_indices);
 	glDeleteBuffers(1, &vbo_vertices);
 	releaseProgram(glProgram, glShaderV, glShaderF);
+}
+
+void cOcean::setTransparency(float t) {
+    transparency = glm::clamp(0.0f, 1.0f, t);
 }
 
 float cOcean::dispersion(int n_prime, int m_prime) {
@@ -217,7 +331,12 @@ float cOcean::phillips(int n_prime, int m_prime) {
 	float damping   = 0.001;
 	float l2        = L2 * damping * damping;
 
-	return A * exp(-1.0f / (k_length2 * L2)) / k_length4 * k_dot_w2 * exp(-k_length2 * l2);
+	    float directionalFocus = 2.0f * pow(abs(k_dot_w), 4.0f);
+    float steepness = 0.8f - 0.3f * exp(-k_length2 * L2 * 4.0f);
+
+	return A * exp(-1.0f/(k_length2 * L2)) / k_length4 
+             * k_dot_w2 * directionalFocus * steepness
+             * exp(-k_length2 * l2);
 }
 
 complex cOcean::hTilde_0(int n_prime, int m_prime) {
@@ -422,6 +541,7 @@ void cOcean::evaluateWavesFFT(float t) {
 			vertices[index1].nx =  n.x;
 			vertices[index1].ny =  n.y;
 			vertices[index1].nz =  n.z;
+			vertices[index1].alpha_weight = glm::smoothstep(-1.0f, 1.0f, -vertices[index1].y);
 
 			// for tiling
 			if (n_prime == 0 && m_prime == 0) {
@@ -433,6 +553,7 @@ void cOcean::evaluateWavesFFT(float t) {
 				vertices[index1 + N + Nplus1 * N].nx =  n.x;
 				vertices[index1 + N + Nplus1 * N].ny =  n.y;
 				vertices[index1 + N + Nplus1 * N].nz =  n.z;
+				vertices[index1 + N + Nplus1 * N].alpha_weight = glm::smoothstep(-1.0f, 1.0f, -vertices[index1 + N + Nplus1 * N].y);
 			}
 			if (n_prime == 0) {
 				vertices[index1 + N].y = h_tilde[index].a;
@@ -443,6 +564,7 @@ void cOcean::evaluateWavesFFT(float t) {
 				vertices[index1 + N].nx =  n.x;
 				vertices[index1 + N].ny =  n.y;
 				vertices[index1 + N].nz =  n.z;
+                vertices[index1 + N].alpha_weight = glm::smoothstep(-1.0f, 1.0f, vertices[index1 + N].y);
 			}
 			if (m_prime == 0) {
 				vertices[index1 + Nplus1 * N].y = h_tilde[index].a;
@@ -453,9 +575,32 @@ void cOcean::evaluateWavesFFT(float t) {
 				vertices[index1 + Nplus1 * N].nx =  n.x;
 				vertices[index1 + Nplus1 * N].ny =  n.y;
 				vertices[index1 + Nplus1 * N].nz =  n.z;
+				vertices[index1 + Nplus1 * N].alpha_weight = glm::smoothstep(-1.0f, 1.0f, -vertices[index1 + Nplus1 * N].y);
 			}
 		}
 	}
+}
+
+void renderSkyGradient() {
+    glDisable(GL_DEPTH_TEST);
+    glMatrixMode(GL_PROJECTION);
+    glLoadIdentity();
+    glMatrixMode(GL_MODELVIEW);
+    glLoadIdentity();
+    
+    glBegin(GL_QUADS);
+    // 顶部 - 深天蓝
+    glColor3f(0.4f, 0.7f, 0.9f);
+    glVertex2f(-1.0f, -1.0f);
+    glVertex2f(1.0f, -1.0f);
+    
+    // 底部 - 浅天蓝
+    glColor3f(0.53f, 0.81f, 0.92f);
+    glVertex2f(1.0f, 1.0f);
+    glVertex2f(-1.0f, 1.0f);
+    glEnd();
+    
+    glEnable(GL_DEPTH_TEST);
 }
 
 void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat4 View, glm::mat4 Model, bool use_fft) {
@@ -466,8 +611,41 @@ void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat
 	} else if (use_fft) {
 		evaluateWavesFFT(t);
 	}
+	
+    glClearColor(0.53f, 0.81f, 0.92f, 1.0f);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    renderSkyGradient();
 
 	glUseProgram(glProgram);
+    glEnable(GL_DEPTH_TEST);
+    glEnable(GL_BLEND);
+    glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    glDepthMask(GL_FALSE); 
+
+    glActiveTexture(GL_TEXTURE1);
+    glBindTexture(GL_TEXTURE_2D, foamTexture);
+    glUniform1i(u_foamTexture, 1);
+    
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, normalMapTexture);
+    glUniform1i(u_normalMap, 2);
+    
+    // 设置时间
+    glUniform1f(u_time, t);
+
+    glm::mat4 invView = glm::inverse(View);
+    glm::vec3 cameraPos = glm::vec3(invView[3]);
+
+    float lightDistance = glm::distance(light_pos, cameraPos);
+    GLint u_lightDistance_loc = glGetUniformLocation(glProgram, "u_lightDistance");
+    if (u_lightDistance_loc != -1) {
+        glUniform1f(u_lightDistance_loc, lightDistance);
+    } else {
+        // fprintf(stderr, "u_lightDistance uniform not found\n");
+    }
+
+    glUniform1f(u_transparency, transparency);
 	glUniform3f(light_position, light_pos.x, light_pos.y, light_pos.z);
 	glUniformMatrix4fv(projection, 1, GL_FALSE, glm::value_ptr(Projection));
 	glUniformMatrix4fv(view,       1, GL_FALSE, glm::value_ptr(View));
@@ -481,6 +659,9 @@ void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat
 	glVertexAttribPointer(normal, 3, GL_FLOAT, GL_FALSE, sizeof(vertex_ocean), (char *)NULL + 12);
 	glEnableVertexAttribArray(texture);
 	glVertexAttribPointer(texture, 3, GL_FLOAT, GL_FALSE, sizeof(vertex_ocean), (char *)NULL + 24);
+	glEnableVertexAttribArray(alpha);
+    glVertexAttribPointer(alpha, 1, GL_FLOAT, GL_FALSE, sizeof(vertex_ocean),
+                        (void*)offsetof(vertex_ocean, alpha_weight));
 
 	glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, vbo_indices);
 	for (int j = 0; j < 10; j++) {
@@ -491,6 +672,9 @@ void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat
 			glDrawElements(geometry ? GL_LINES : GL_TRIANGLES, indices_count, GL_UNSIGNED_INT, 0);
 		}
 	}
+
+    glDisable(GL_BLEND);
+    glDepthMask(GL_TRUE);
 }
 
 int main(int argc, char *argv[]) {
@@ -519,7 +703,8 @@ int main(int argc, char *argv[]) {
 
 	// ocean simulator
 	cOcean ocean(128, 0.0005f, vector2(32.0f,32.0f), 64, false);
-    // ocean.setTransparency(1.0f);
+	ocean.setTransparency(1.0);
+    ocean.initTextures();
 
 	// model view projection matrices and light position
 	glm::mat4 Projection = glm::perspective(45.0f, (float)WIDTH / (float)HEIGHT, 0.1f, 1000.0f); 
@@ -535,6 +720,7 @@ int main(int argc, char *argv[]) {
     key_up = key_down = key_front = key_back = key_left = key_right = 0;
     int step_length = 100;
     int use_fft = 1;
+	float zoom_scale = 1.0;
 	while(active) {
 		while (SDL_PollEvent(&event)) {
 			switch (event.type) {
@@ -550,6 +736,7 @@ int main(int argc, char *argv[]) {
 					screen = SDL_SetVideoMode(WIDTH, HEIGHT, 32, (fullscreen ? SDL_FULLSCREEN : 0) | SDL_HWSURFACE | SDL_OPENGL);
 					break;
                 case SDLK_e: use_fft ^= 1; break;
+				case SDLK_m: zoom_scale = 1.0; break;
                 case SDLK_SPACE: key_up = 1; break;
                 case SDLK_LSHIFT: key_down = 1; break;
                 case SDLK_w: key_front = 1; break;
@@ -572,8 +759,17 @@ int main(int argc, char *argv[]) {
                 mst.axis[0] = event.motion.x;
                 mst.axis[1] = event.motion.y;
                 break;
+            case SDL_MOUSEBUTTONDOWN:
+                switch(event.button.button) {
+                    case SDL_BUTTON_LEFT: zoom_scale *= 1.5; break;
+                    case SDL_BUTTON_RIGHT: zoom_scale *= 0.5; break;
+                }
+                if (zoom_scale <= 0.5) zoom_scale = 0.5;
+                // std::cout << zoom_scale <<std::endl;
+                break;
 			}
 		}
+
 
 		// time elapsed since last frame
 		elapsed0 = t0.elapsed(true);
@@ -614,6 +810,8 @@ int main(int argc, char *argv[]) {
 		View  = glm::rotate(View, yaw,   glm::vec3(0.0f, 1.0f, 0.0f));
 		View  = glm::translate(View, glm::vec3(x, -50 + y, z));
 		light_position = glm::vec3(1000.0f, 100.0f, -1000.0f);
+
+		Projection = glm::perspective(45.0f / zoom_scale, (float)WIDTH / (float)HEIGHT, 0.1f * zoom_scale, 1000.0f * zoom_scale); 
 
 		if (video_grab) {
 			elapsed_video += 1.0f/30.0f;
