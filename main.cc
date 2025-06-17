@@ -28,8 +28,8 @@
 
 // ==================== 新增: LOD系统 ====================
 const int MAX_LOD_LEVELS = 6;
-const float LOD_DISTANCES[MAX_LOD_LEVELS] = {50.0f, 100.0f, 200.0f, 400.0f, 800.0f, 1600.0f};
-const float LOD_TRANSITION_RANGE = 0.2f; // 20%过渡范围
+const float LOD_DISTANCES[MAX_LOD_LEVELS] = {150.0f, 300.0f, 600.0f, 1200.0f, 2400.0f, 4800.0f}; 
+const float LOD_TRANSITION_RANGE = 0.3f; // 20%过渡范围
 
 // LOD统计
 struct LODStats {
@@ -58,35 +58,31 @@ public:
     }
 
     void update(const glm::vec3& cameraPos, float frustum[6][4], int depth=0) {
-		const int MAX_RECURSION_DEPTH = 20;
+			const int MAX_RECURSION_DEPTH = 20;
 
 		if (depth > MAX_RECURSION_DEPTH) {
 			active = inFrustum;
 			return;
 		}
 
+		// 计算距离和视锥体可见性
+		float distance = glm::distance(cameraPos, center);
+		inFrustum = isInFrustum(frustum);
+		
 		// 定义 LOD 阈值
 		float lodThreshold = LOD_DISTANCES[level] * (1.0f - LOD_TRANSITION_RANGE);
 		float nextLodThreshold = (level < MAX_LOD_LEVELS - 1) ? 
 								LOD_DISTANCES[level + 1] : 
 								FLT_MAX;
 
-		// 保留子节点状态
-		bool hadChildren = (children[0] != nullptr);
-		
-		// 计算距离和视锥体可见性
-		float distance = glm::distance(cameraPos, center);
-		
-		inFrustum = isInFrustum(frustum);
-		
-		// 动态LOD阈值（考虑移动速度）
+		// 动态LOD阈值
 		float speed = glm::length(cameraPos - lastCameraPos);
-		float dynamicThreshold = lodThreshold * glm::clamp(1.0f + speed * 0.1f, 1.0f, 1.5f);
+		float dynamicThreshold = lodThreshold * glm::clamp(1.0f + speed * 0.05f, 1.0f, 1.3f);
 		
 		// 判断是否细分
 		bool shouldSubdivide = inFrustum && 
 							(level < MAX_LOD_LEVELS - 1) && 
-							(distance < dynamicThreshold) && 
+							(distance < dynamicThreshold) &&
 							(size > 16.0f);
 		
 		// 处理子节点
@@ -95,33 +91,24 @@ public:
 			for (int i = 0; i < 4; i++) {
 				children[i]->update(cameraPos, frustum, depth+1);
 			}
-			active = false;
+			// 即使有子节点，父节点仍可能处于活动状态
+			active = inFrustum && (distance < nextLodThreshold * 1.5f);
 		} else {
-			// 智能保留策略
-			bool keepChildren = false;
-			if (hadChildren) {
-				// 如果相机正朝该节点移动，保留子节点
-				glm::vec3 toNode = glm::normalize(center - cameraPos);
-				glm::vec3 moveDir = glm::normalize(cameraPos - lastCameraPos);
-				
-				if (glm::dot(moveDir, toNode) > 0.3f && distance < LOD_DISTANCES[level] * 2.0f) {
-					keepChildren = true;
-					for (int i = 0; i < 4; i++) {
-						if (children[i]) {
-							children[i]->update(cameraPos, frustum, depth+1);
-						}
-					}
+			// 如果没有子节点，则当前节点应激活
+			active = inFrustum;
+			
+			// 如果已有子节点，更新它们但保持自己激活
+			bool hasChildren = false;
+			for (int i = 0; i < 4; i++) {
+				if (children[i]) {
+					hasChildren = true;
+					children[i]->update(cameraPos, frustum, depth+1);
 				}
 			}
 			
-			if (!keepChildren) {
-				for (int i = 0; i < 4; i++) {
-					if (children[i]) {
-						delete children[i];
-						children[i] = nullptr;
-					}
-				}
-				active = inFrustum && (distance < nextLodThreshold * 1.2f); // 20%安全边界
+			// 如果没有子节点且应激活，则保持激活
+			if (!hasChildren) {
+				active = inFrustum;
 			}
 		}
 		
@@ -130,18 +117,21 @@ public:
 	}
 
     void collectNodes(std::vector<QuadTreeNode*>& nodes, LODStats& stats) {
-        if (!inFrustum) return;
-
-        if (active) {
-            nodes.push_back(this);
-            stats.renderedNodes++;
-            stats.lodCount[level]++;
-        } else {
-            for (int i = 0; i < 4; i++) {
-                if (children[i]) children[i]->collectNodes(nodes, stats);
-            }
-        }
         stats.totalNodes++;
+    
+		// 如果当前节点在视锥内且活动，收集它
+		if (inFrustum && active) {
+			nodes.push_back(this);
+			stats.renderedNodes++;
+			stats.lodCount[level]++;
+		}
+		
+		// 总是递归检查子节点
+		for (int i = 0; i < 4; i++) {
+			if (children[i]) {
+				children[i]->collectNodes(nodes, stats);
+			}
+		}
     }
 
     void getCorners(glm::vec3 corners[4]) const {
@@ -345,7 +335,7 @@ public:
         u_time = glGetUniformLocation(glProgram, "u_time");
         
         // 新增: 初始化LOD根节点
-        lodRoot = new QuadTreeNode(glm::vec3(0.0f, 0.0f, 0.0f), length, 0);
+        lodRoot = new QuadTreeNode(glm::vec3(0.0f, 0.0f, 0.0f), length * 2, 0);
         debugLOD = false;
         
         // 新增: 创建LOD调试着色器
@@ -367,63 +357,6 @@ public:
     
     // 新增: 切换LOD调试显示
     void toggleDebugLOD() { debugLOD = !debugLOD; }
-    
-    // 新增: 渲染LOD调试信息
-    void renderLODDebug(glm::mat4 Projection, glm::mat4 View, glm::mat4 Model) {
-        if (!debugLOD) return;
-        
-        std::vector<QuadTreeNode*> nodes;
-        lodRoot->collectNodes(nodes, lodStats);
-        
-        glUseProgram(lodDebugProgram);
-        GLint projectionLoc = glGetUniformLocation(lodDebugProgram, "Projection");
-        GLint viewLoc = glGetUniformLocation(lodDebugProgram, "View");
-        GLint modelLoc = glGetUniformLocation(lodDebugProgram, "Model");
-        
-        glUniformMatrix4fv(projectionLoc, 1, GL_FALSE, glm::value_ptr(Projection));
-        glUniformMatrix4fv(viewLoc, 1, GL_FALSE, glm::value_ptr(View));
-        
-        // 设置不同LOD级别的颜色
-        glm::vec4 lodColors[MAX_LOD_LEVELS] = {
-            glm::vec4(1.0f, 0.0f, 0.0f, 0.5f), // L0: 红
-            glm::vec4(0.0f, 1.0f, 0.0f, 0.5f), // L1: 绿
-            glm::vec4(0.0f, 0.0f, 1.0f, 0.5f), // L2: 蓝
-            glm::vec4(1.0f, 1.0f, 0.0f, 0.5f), // L3: 黄
-            glm::vec4(1.0f, 0.0f, 1.0f, 0.5f), // L4: 紫
-            glm::vec4(0.0f, 1.0f, 1.0f, 0.5f)  // L5: 青
-        };
-        
-        GLint colorLoc = glGetUniformLocation(lodDebugProgram, "color");
-        
-        // 渲染每个活动节点
-        for (QuadTreeNode* node : nodes) {
-            glm::vec3 corners[4];
-            node->getCorners(corners);
-            
-            // 设置模型矩阵
-            glm::mat4 nodeModel = glm::translate(Model, glm::vec3(0.0f, 0.1f, 0.0f));
-            glUniformMatrix4fv(modelLoc, 1, GL_FALSE, glm::value_ptr(nodeModel));
-            
-            // 设置颜色
-            glUniform4fv(colorLoc, 1, glm::value_ptr(lodColors[node->level]));
-            
-            // 绘制边界框
-            glBegin(GL_LINE_LOOP);
-            for (int i = 0; i < 4; i++) {
-                glVertex3f(corners[i].x, corners[i].y, corners[i].z);
-            }
-            // glVertex3f(corners[0].x, corners[0].y, corners[0].z);
-            glEnd();
-            
-            // 绘制对角线
-            glBegin(GL_LINES);
-            glVertex3f(corners[0].x, corners[0].y, corners[0].z);
-            glVertex3f(corners[2].x, corners[2].y, corners[2].z);
-            glVertex3f(corners[1].x, corners[1].y, corners[1].z);
-            glVertex3f(corners[3].x, corners[3].y, corners[3].z);
-            glEnd();
-        }
-    }
     
     // 新增: 获取LOD统计
     const LODStats& getLODStats() const { return lodStats; }
@@ -516,8 +449,6 @@ cOcean::cOcean(const int N, const float A, const vector2 w, const float length, 
     vertices       = new vertex_ocean[Nplus1*Nplus1];
     indices        = new unsigned int[Nplus1*Nplus1*10];
 
-    // if (N >= 256) cufft = new cuFFT(N);
-    // fft = new cFFT(N);
     cufft = new cuFFT(N);
 
     int index;
@@ -1017,250 +948,16 @@ void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat
     glDisable(GL_BLEND);
     glDepthMask(GL_TRUE);
     
-    // 渲染LOD调试信息
-    renderLODDebug(Projection, View, Model);
 }
 
-void renderLODStats(const LODStats& stats, int x, int y, SDL_Surface* screen, TTF_Font* font) {
-    // 颜色定义
-    SDL_Color white = {255, 255, 255, 0};
-    SDL_Color black = {0, 0, 0, 0};
-    
-    // 创建背景矩形（SDL1.2方式）
-    SDL_Rect backgroundRect = {x, y, 300, 150};
-    SDL_FillRect(screen, &backgroundRect, SDL_MapRGB(screen->format, black.r, black.g, black.b));
-    
-    // 渲染标题
-    SDL_Surface* titleSurface = TTF_RenderText_Solid(font, "LOD Statistics", white);
-    SDL_Rect titleRect = {x + 10, y + 110, 0, 0};
-    SDL_BlitSurface(titleSurface, NULL, screen, &titleRect);
-    SDL_FreeSurface(titleSurface);
-    
-    // 渲染统计数据
-    std::stringstream ss;
-    ss << "Total Nodes: " << stats.totalNodes << "\n"
+void renderLODStats(const LODStats& stats) {
+    std::cerr << "Total Nodes: " << stats.totalNodes << "\n"
        << "Rendered Nodes: " << stats.renderedNodes << "\n";
     
     for (int i = 0; i < MAX_LOD_LEVELS; i++) {
-        ss << "LOD " << i << ": " << stats.lodCount[i] << "\n";
-    }
-    
-    int line = 1;
-    std::string lineStr;
-    while (std::getline(ss, lineStr)) {
-        SDL_Surface* textSurface = TTF_RenderText_Solid(font, lineStr.c_str(), white);
-        SDL_Rect textRect = {x + 10, y + 130 + line * 20, 0, 0};
-        SDL_BlitSurface(textSurface, NULL, screen, &textRect);
-        SDL_FreeSurface(textSurface);
-        line++;
+        std::cerr << "LOD " << i << ": " << stats.lodCount[i] << "\n";
     }
 }
-
-class OceanTile {
-public:
-    OceanTile(const glm::vec3& center, float size, int N, float A, const vector2& w)
-        : center(center), size(size), baseN(N), A(A), w(w), 
-          ocean(N, A, w, size, false), currentLOD(0) {
-        modelMatrix = glm::translate(glm::mat4(1.0f), center);
-    }
-    
-    void update(const glm::vec3& cameraPos, float frustum[6][4], 
-               std::vector<OceanTile*>& visibleTiles) {
-        // 使用SDL获取时间
-        float currentTime = SDL_GetTicks() / 1000.0f;
-        ocean.evaluateWavesFFT(currentTime);
-
-		updateLOD(cameraPos);
-        
-        // 更新LOD
-        updateLOD(cameraPos);
-        
-        // 检查可见性
-        visible = isVisible(frustum);
-        if (visible) visibleTiles.push_back(this);
-    }
-    
-    void render(float t, const glm::vec3& lightPos, 
-                const glm::mat4& VP, const glm::mat4& view) {
-        if (!visible) return;
-        
-        ocean.render(t, lightPos, VP, view, modelMatrix, true);
-    }
-    
-    const glm::vec3& getCenter() const { return center; }
-    float getSize() const { return size; }
-    
-    void updateLOD(const glm::vec3& cameraPos) {
-        float distance = glm::distance(cameraPos, center);
-        int newLOD = 0;
-        
-        // 根据距离确定LOD级别
-        if (distance > 2000.0f) newLOD = 3;
-        else if (distance > 1000.0f) newLOD = 2;
-        else if (distance > 500.0f) newLOD = 1;
-        
-        // 如果LOD变化，重新创建海洋
-        if (newLOD != currentLOD) {
-            int newN = baseN / (1 << newLOD);
-            if (newN < 16) newN = 16; // 最小网格尺寸
-            
-            ocean = cOcean(newN, A, w, size, false);
-            currentLOD = newLOD;
-        }
-    }
-    
-    bool isVisible(float frustum[6][4]) const {
-        // 检查四个角点
-        glm::vec3 corners[4] = {
-            center + glm::vec3(-size/2, 0, -size/2),
-            center + glm::vec3(size/2, 0, -size/2),
-            center + glm::vec3(size/2, 0, size/2),
-            center + glm::vec3(-size/2, 0, size/2)
-        };
-        
-        for (int plane = 0; plane < 6; plane++) {
-            bool inside = false;
-            for (int i = 0; i < 4; i++) {
-                float distance = 
-                    frustum[plane][0] * corners[i].x +
-                    frustum[plane][1] * corners[i].y +
-                    frustum[plane][2] * corners[i].z +
-                    frustum[plane][3];
-                if (distance >= 0) {
-                    inside = true;
-                    break;
-                }
-            }
-            if (!inside) return false;
-        }
-        return true;
-    }
-
-    glm::vec3 center;
-    float size;
-    int baseN;
-    float A;
-    vector2 w;
-    int currentLOD;
-    cOcean ocean;
-    glm::mat4 modelMatrix;
-    bool visible = true;
-};
-
-class InfiniteOcean {
-public:
-    InfiniteOcean(int baseN, float baseSize, float A, const vector2& w)
-        : baseN(baseN), baseSize(baseSize), A(A), w(w) {
-        // 初始创建中心瓦片
-        allTiles.push_back(new OceanTile(glm::vec3(0, 0, 0), baseSize, baseN, A, w));
-    }
-
-    void update(const glm::vec3& cameraPos, const glm::mat4& VP) {
-        // 提取视锥体
-        float frustum[6][4];
-        extractFrustumPlanes(VP, frustum);
-        
-        // 更新可见瓦片
-        visibleTiles.clear();
-        for (auto tile : allTiles) {
-            tile->update(cameraPos, frustum, visibleTiles);
-			
-        	glm::vec3 center = tile->center;
-        	float distance = glm::distance(cameraPos, center);
-			std::cerr << "Tile at (" << center.x << ", " << center.z 
-                  << ") size: " << tile->getSize() 
-                  << ", distance: " << distance << "\n";
-        }
-        
-        // 添加新瓦片
-        addNewTiles(cameraPos, frustum);
-    }
-
-    void render(float t, const glm::vec3& lightPos, 
-                const glm::mat4& VP, const glm::mat4& view) {
-        for (auto& tile : visibleTiles) {
-            tile->render(t, lightPos, VP, view);
-        }
-    }
-    
-    void toggleDebugLOD() { debugLOD = !debugLOD; }
-    
-    const LODStats& getLODStats() const {
-        // 简单统计
-        lodStats.totalNodes = allTiles.size();
-        lodStats.renderedNodes = visibleTiles.size();
-        return lodStats;
-    }
-    
-	~InfiniteOcean() {
-        release();
-    }
-    
-    void release() {
-        std::cout << "Releasing " << allTiles.size() << " tiles..." << std::endl;
-        for (auto tile : allTiles) {
-            if (tile) {
-                delete tile;
-                tile = nullptr;
-            }
-        }
-        allTiles.clear();
-        visibleTiles.clear();
-    }
-    
-    // 禁用拷贝和赋值
-    InfiniteOcean(const InfiniteOcean&) = delete;
-    InfiniteOcean& operator=(const InfiniteOcean&) = delete;
-
-private:
-    void addNewTiles(const glm::vec3& cameraPos, float frustum[6][4]) {
-        // 计算相机所在的瓦片坐标
-        int tileX = static_cast<int>(cameraPos.x / baseSize);
-        int tileZ = static_cast<int>(cameraPos.z / baseSize);
-        
-        // 检查周围3x3区域的瓦片
-        const int radius = 1;
-        for (int z = tileZ - radius; z <= tileZ + radius; z++) {
-            for (int x = tileX - radius; x <= tileX + radius; x++) {
-                glm::vec3 center(x * baseSize, 0, z * baseSize);
-                
-                // 如果瓦片不存在且可见，创建新瓦片
-                if (!tileExists(center) && isInFrustum(center, frustum)) {
-                    allTiles.push_back(new OceanTile(center, baseSize, baseN, A, w));
-                }
-            }
-        }
-    }
-    
-    bool tileExists(const glm::vec3& center) const {
-        for (auto tile : allTiles) {
-            if (tile->getCenter() == center) return true;
-        }
-        return false;
-    }
-    
-    bool isInFrustum(const glm::vec3& center, float frustum[6][4]) const {
-        // 简化的可见性检查
-        for (int i = 0; i < 6; i++) {
-            float distance = frustum[i][0] * center.x + 
-                             frustum[i][1] * center.y + 
-                             frustum[i][2] * center.z + 
-                             frustum[i][3];
-            if (distance < -baseSize) return false;
-        }
-        return true;
-    }
-
-    std::vector<OceanTile*> allTiles;
-    std::vector<OceanTile*> visibleTiles;
-    int baseN;
-    float baseSize;
-    float A;
-    vector2 w;
-    bool debugLOD = false;
-    mutable LODStats lodStats; // 可变的统计对象
-};
-
 
 int main(int argc, char *argv[]) {
 
@@ -1289,11 +986,11 @@ int main(int argc, char *argv[]) {
     SDL_Event event;
 
     // ocean simulator
-    // cOcean ocean(128, 0.0005f, vector2(32.0f,32.0f), 64, false);
-    // ocean.setTransparency(1.0);
-    // ocean.initTextures();
+    cOcean ocean(64, 0.0005f, vector2(32.0f,32.0f), 64, false);
+    ocean.setTransparency(1.0);
+    ocean.initTextures();
 
-	InfiniteOcean ocean(128, 1024.0f, 0.0005f, vector2(32.0f, 32.0f));
+	// InfiniteOcean ocean(128, 1024.0f, 0.0005f, vector2(32.0f, 32.0f));
 
     // model view projection matrices and light position
     glm::mat4 Projection = glm::perspective(45.0f, (float)WIDTH / (float)HEIGHT, 0.1f, 1000.0f); 
@@ -1326,7 +1023,7 @@ int main(int argc, char *argv[]) {
                     break;
                 case SDLK_e: use_fft ^= 1; break;
                 case SDLK_m: zoom_scale = 1.0; break;
-                case SDLK_l: ocean.toggleDebugLOD(); break; // 切换LOD调试显示
+                case SDLK_l: renderLODStats(ocean.getLODStats()); break; // 切换LOD调试显示
                 case SDLK_SPACE: key_up = 1; break;
                 case SDLK_LSHIFT: key_down = 1; break;
                 case SDLK_w: key_front = 1; break;
@@ -1368,18 +1065,6 @@ int main(int argc, char *argv[]) {
         elapsed0 = t0.elapsed(true);
 
         // update frame based on input state
-        /*if (kb.getKeyState(KEY_UP))    alpha += 180.0f*elapsed0;
-        if (kb.getKeyState(KEY_DOWN))  alpha -= 180.0f*elapsed0;
-        if (kb.getKeyState(KEY_LEFT))  beta  -= 180.0f*elapsed0;
-        if (kb.getKeyState(KEY_RIGHT)) beta  += 180.0f*elapsed0;
-        jp[0] = js.joystickPosition(0);
-        jp[1] = js.joystickPosition(1);
-        yaw   += jp[1].x*elapsed0*90;
-        pitch += jp[1].y*elapsed0*90;
-        x     += -cos(-yaw*M_PI/180.0f)*jp[0].x*elapsed0*30 + sin(-yaw*M_PI/180.0f)*jp[0].y*elapsed0*30;
-        z     +=  cos(-yaw*M_PI/180.0f)*jp[0].y*elapsed0*30 + sin(-yaw*M_PI/180.0f)*jp[0].x*elapsed0*30;
-        */
-        // mst = ms.getMouseState();
         yaw   =  (mst.axis[0] - WIDTH / 2) * 0.2;
         pitch = -(mst.axis[1] - HEIGHT / 2) * 0.2;
 
@@ -1406,18 +1091,14 @@ int main(int argc, char *argv[]) {
 
         Projection = glm::perspective(45.0f / zoom_scale, (float)WIDTH / (float)HEIGHT, 0.1f * zoom_scale, 1000.0f * zoom_scale); 
 
-        // ocean.render(t1.elapsed(false), light_position, Projection, View, Model, use_fft);
+        ocean.render(t1.elapsed(false), light_position, Projection, View, Model, use_fft);
 		glm::mat4 VP = Projection * View;
 		glm::mat4 mvp = Projection * View * Model;
 		glm::mat4 invView = glm::inverse(View);
 		glm::vec3 cameraPos = glm::vec3(invView[3]);
-		ocean.update(cameraPos, VP);
-		ocean.render(SDL_GetTicks() / 1000.0f, light_position, VP, View);
-        std::cerr << "Debug: Reached line " << __LINE__  << std::endl;
-
-        // 显示LOD统计信息
-        renderLODStats(ocean.getLODStats(), 10, 10, screen, font);
-		std::cerr << "Debug: Reached line " << __LINE__  << std::endl;
+		//ocean.update(cameraPos, VP);
+		//ocean.render(SDL_GetTicks() / 1000.0f, light_position, VP, View, );
+        //std::cerr << "Debug: Reached line " << __LINE__  << std::endl;
 
         SDL_GL_SwapBuffers();
 

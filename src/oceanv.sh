@@ -50,5 +50,5 @@ void main() {
     vAlphaWeight = aAlphaWeight;
     
     // 计算波浪陡峭度
-    steepness = length(normal1.xz) * 3.0;
+    steepness = length(normal1.xz) * 1.0;
 }
