@@ -16,6 +16,8 @@ uniform float uTransparency;
 uniform float u_time;
 uniform float u_lightDistance;
 uniform vec3 light_position;
+uniform float u_fogDensity;
+uniform vec3 u_fogColor;
 
 out vec4 fragColor;
 

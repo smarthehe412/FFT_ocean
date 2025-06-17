@@ -2,6 +2,8 @@
 #include <SDL/SDL_image.h>
 #include <sstream>
 #include <fstream>
+#include <cmath>
+#include <vector>
 
 #include <GL/glew.h>
 
@@ -22,7 +24,10 @@
 #include "src/fft.h"
 #include "src/cuFFT.h"
 
-
+const float OCEAN_SIZE = 640.0f; // 10 tiles * 64 length
+const float BOUNDARY = OCEAN_SIZE / 2.0f; // 320 units from center to edge
+const float MIN_Y = -200.0f;
+const float MAX_Y = 1000.0f;
 
 struct vertex_ocean {
 	GLfloat   x,   y,   z; // vertex
@@ -667,7 +672,12 @@ void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat
 	for (int j = 0; j < 10; j++) {
 		for (int i = 0; i < 10; i++) {
 			Model = glm::scale(glm::mat4(1.0f), glm::vec3(5.f,5.f,5.f));
-			Model = glm::translate(Model, glm::vec3(length * i, 0, length * -j));
+			float offset = OCEAN_SIZE / 2.0f - length / 2.0f;
+			Model = glm::translate(Model, glm::vec3(
+				length * i - offset, 
+				0, 
+				-(length * j - offset)  // Z取负值
+			));
 			glUniformMatrix4fv(model, 1, GL_FALSE, glm::value_ptr(Model));
 			glDrawElements(geometry ? GL_LINES : GL_TRIANGLES, indices_count, GL_UNSIGNED_INT, 0);
 		}
@@ -680,7 +690,6 @@ void cOcean::render(float t, glm::vec3 light_pos, glm::mat4 Projection, glm::mat
 int main(int argc, char *argv[]) {
 
 	// constants
-	// const int WIDTH  = 640, HEIGHT = 360;
 	const int WIDTH  = 1600, HEIGHT = 900;
 	
 	// buffer for grabs
@@ -702,7 +711,7 @@ int main(int argc, char *argv[]) {
 	SDL_Event event;
 
 	// ocean simulator
-	cOcean ocean(128, 0.0005f, vector2(32.0f,32.0f), 64, false);
+	cOcean ocean(64, 0.0005f, vector2(32.0f,32.0f), 64, false);
 	ocean.setTransparency(1.0);
     ocean.initTextures();
 
@@ -761,10 +770,13 @@ int main(int argc, char *argv[]) {
                 break;
             case SDL_MOUSEBUTTONDOWN:
                 switch(event.button.button) {
+					case SDL_BUTTON_WHEELUP: zoom_scale *= 1.1; break;
+					case SDL_BUTTON_WHEELDOWN: zoom_scale *= 0.9; break;
                     case SDL_BUTTON_LEFT: zoom_scale *= 1.5; break;
                     case SDL_BUTTON_RIGHT: zoom_scale *= 0.5; break;
                 }
                 if (zoom_scale <= 0.5) zoom_scale = 0.5;
+				if (zoom_scale >= 10.0) zoom_scale = 10.0;
                 // std::cout << zoom_scale <<std::endl;
                 break;
 			}
@@ -800,6 +812,10 @@ int main(int argc, char *argv[]) {
 		x     += -cos(-yaw*M_PI/180.0f)*keyx*elapsed0*step_length + sin(-yaw*M_PI/180.0f)*keyz*elapsed0*step_length;
 		z     +=  cos(-yaw*M_PI/180.0f)*keyz*elapsed0*step_length + sin(-yaw*M_PI/180.0f)*keyx*elapsed0*step_length;
         y     +=  keyy*elapsed0*step_length;
+
+		x = glm::clamp(x, -BOUNDARY, BOUNDARY);
+        z = glm::clamp(z, -BOUNDARY, BOUNDARY);
+        y = glm::clamp(y, MIN_Y, MAX_Y);
 
 		// rendering
 		glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
