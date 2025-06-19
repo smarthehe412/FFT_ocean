@@ -6,8 +6,11 @@ This code is modified from [Keith Lantz's codebase](https://github.com/klantz81/
 
 ## Things we added
 
-- Camera movement
-- 
+- GPU acceleration
+- Camera movement and scaling
+- Physical surface optics
+- Subsurface optics
+- LOD
 
 ## Install 
 After installing openGL and libsdl, run command
