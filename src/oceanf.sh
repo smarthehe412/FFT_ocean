@@ -10,8 +10,15 @@ in vec3 world_position;
 in float steepness;
 in vec3 vPosition;
 
+// 新增输入变量
+in vec3 surface_to_light;
+in vec3 surface_to_camera;
+in vec3 refracted_light;
+in float underwater_depth;
+
 uniform sampler2D u_foamTexture;
 uniform sampler2D u_normalMap;
+uniform sampler2D u_causticTexture;  // 焦散纹理
 uniform float uTransparency;
 uniform float u_time;
 uniform float u_lightDistance;
@@ -19,16 +26,17 @@ uniform vec3 light_position;
 uniform float u_fogDensity;
 uniform vec3 u_fogColor;
 
+// 新增 uniform
+uniform float u_causticIntensity;    // 焦散强度
+uniform float u_godrayIntensity;     // 光柱强度
+uniform float u_scatteringCoeff;     // 散射系数 (新增)
+
 out vec4 fragColor;
 
 void main(void) {
     // 1. 基础参数
     vec3 lightColor = vec3(1.0, 0.95, 0.85);
-    // 蓝绿色调
     vec3 waterColor = vec3(0.0, 0.15, 0.45);
-    
-    // 光照衰减
-    // float attenuation = 1.0 / (1.0 + 0.02*u_lightDistance + 0.0002*u_lightDistance*u_lightDistance);
     
     // 2. 法线处理
     vec3 normal1 = normalize(normal_vector);
@@ -62,6 +70,46 @@ void main(void) {
     float foamIntensity = smoothstep(0.5, 0.8, -depth);
     if(foamIntensity > 0.8) {
         baseColor = mix(baseColor, vec3(0.9, 0.95, 1.0), foamIntensity * 0.04);
+    }
+    
+    // ====================== 焦散效果 ======================
+    // 计算焦散纹理坐标
+    vec2 causticUV = world_position.xz * 0.01 + refracted_light.xz * underwater_depth * 0.05;
+    causticUV += vec2(u_time * 0.005, u_time * 0.0025);
+    
+    // 采样焦散纹理
+    float caustic = texture(u_causticTexture, causticUV).r;
+    
+    // 应用深度衰减 (深度越大焦散越明显)
+    float depthAtten = 1.0 - exp(-underwater_depth * 0.1);
+    caustic *= depthAtten;
+    
+    // 应用通量守恒 (聚焦区域更亮)
+    float focus_factor = pow(1.0 - abs(dot(normal1, normalize(refracted_light))), 2.0);
+    caustic *= mix(1.0, 1.5, focus_factor);
+    
+    // 添加到基础颜色
+    baseColor = mix(baseColor, lightColor, caustic * u_causticIntensity * 0.5);
+    
+    // ====================== 光柱效果 ======================
+    if (underwater_depth > 0.1) {  // 仅在水下生效
+        // 计算到光柱中心线的距离
+        vec3 toLight = normalize(surface_to_light);
+        vec3 toCamera = normalize(surface_to_camera);
+        
+        // 计算散射角度
+        float scatterAngle = acos(dot(toLight, toCamera));
+        float scatterFactor = exp(-scatterAngle * scatterAngle * 50.0);
+        
+        // 计算体积散射 (基于深度和角度)
+        float godray = scatterFactor * u_godrayIntensity;
+        
+        // 应用深度衰减和散射系数 (使用新增的uniform)
+        godray *= exp(-underwater_depth * 0.5) * u_scatteringCoeff;
+        
+        // 添加到基础颜色
+        // baseColor += caustic * u_causticIntensity * lightColor;
+        baseColor += min(godray * lightColor * 0.2, vec3(0.3));
     }
     
     // 6. 透明度处理

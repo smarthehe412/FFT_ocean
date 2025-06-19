@@ -9,6 +9,7 @@ uniform mat4 View;
 uniform mat4 Model;
 uniform vec3 light_position;
 uniform float u_time;
+uniform vec3 camera_position;  // 添加相机位置 uniform
 
 out vec3 light_vector;
 out vec3 normal_vector;
@@ -21,6 +22,11 @@ out float steepness;
 in float aAlphaWeight;
 out float vAlphaWeight;
 out vec3 vPosition;
+
+out vec3 surface_to_light;  // 水面到光源的向量
+out vec3 surface_to_camera; // 水面到相机的向量
+out vec3 refracted_light;   // 折射光线方向
+out float underwater_depth; // 水下深度
 
 void main() {
     // 位置计算
@@ -50,5 +56,19 @@ void main() {
     vAlphaWeight = aAlphaWeight;
     
     // 计算波浪陡峭度
-    steepness = length(normal1.xz) * 1.0;
+    steepness = length(normal1.xz) * 3.0;
+
+    // 计算水面到光源和相机的向量
+    surface_to_light = light_position - worldPos.xyz;
+    surface_to_camera = camera_position - worldPos.xyz;  // 使用声明的 uniform
+    
+    // 计算折射光线方向
+    float air_ior = 1.0;      // 空气折射率
+    float water_ior = 1.33;   // 水折射率
+    vec3 incident = normalize(worldPos.xyz - camera_position);  // 使用声明的 uniform
+    vec3 norm = normalize(normal1);
+    refracted_light = refract(incident, norm, air_ior/water_ior);
+    
+    // 计算水下深度 (假设水面在 y=0)
+    underwater_depth = clamp(-world_position.y, 0.0, 100.0);
 }
